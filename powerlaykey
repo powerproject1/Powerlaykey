@@ -1,0 +1,278 @@
+from flask import Flask, request, session, redirect, render_template_string, jsonify
+import json, os, random, string
+from datetime import datetime, timedelta
+import hashlib
+
+app = Flask(__name__)
+app.secret_key = "super_secret_key"
+
+DB_FILE = "db.json"
+
+
+# ================= DATA =================
+
+def load():
+    if os.path.exists(DB_FILE):
+        return json.load(open(DB_FILE))
+    return {"users": {}, "keys": {}}
+
+def save(d):
+    json.dump(d, open(DB_FILE, "w"), indent=2)
+
+def hash_pw(p):
+    return hashlib.sha256(p.encode()).hexdigest()
+
+
+def gen_key():
+    return "VOID-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
+
+
+# ================= UI =================
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>VOID LICENSE</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&display=swap" rel="stylesheet">
+
+<style>
+body{
+margin:0;
+font-family:Inter;
+background:#0a0f1c;
+color:white;
+}
+
+.container{
+width:900px;
+margin:60px auto;
+}
+
+.card{
+background:rgba(255,255,255,0.05);
+padding:20px;
+border-radius:16px;
+margin:10px 0;
+backdrop-filter: blur(10px);
+}
+
+input,select,button{
+width:100%;
+padding:10px;
+margin-top:8px;
+border-radius:10px;
+border:none;
+}
+
+button{
+background:#7c5cff;
+color:white;
+cursor:pointer;
+}
+
+button:hover{
+background:#9b7bff;
+}
+
+h1{color:#7c5cff}
+
+.small{opacity:0.7;font-size:12px}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+{% if not user %}
+
+<div class="card">
+<h1>VOID LICENSE SYSTEM</h1>
+
+<h3>Login</h3>
+<form method="post" action="/login">
+<input name="username" placeholder="username">
+<input name="password" type="password" placeholder="password">
+<button>Login</button>
+</form>
+
+<hr>
+
+<h3>Register</h3>
+<form method="post" action="/register">
+<input name="username" placeholder="username">
+<input name="password" type="password" placeholder="password">
+<button>Create</button>
+</form>
+</div>
+
+{% else %}
+
+<div class="card">
+<h2>Dashboard</h2>
+<p>User: {{user}}</p>
+</div>
+
+<div class="card">
+<h3>🔑 Create Key</h3>
+
+<select id="days">
+<option value="1">1 Day</option>
+<option value="3">3 Days</option>
+<option value="7">7 Days</option>
+<option value="30">30 Days</option>
+</select>
+
+<input id="count" placeholder="count">
+
+<button onclick="createKey()">Generate</button>
+</div>
+
+<div class="card">
+<h3>📦 Output</h3>
+<pre id="out">ready...</pre>
+</div>
+
+{% endif %}
+
+</div>
+
+<script>
+
+async function createKey(){
+let r = await fetch('/api/create',{
+method:'POST',
+headers:{'Content-Type':'application/json'},
+body:JSON.stringify({
+days:days.value,
+count:count.value
+})
+})
+
+let d = await r.json()
+
+let text = "KEYS:\\n" + d.keys.join("\\n") + "\\n\\nCONNECT:\\n" + d.connect.join("\\n")
+
+out.innerText = text
+}
+
+</script>
+
+</body>
+</html>
+"""
+
+
+# ================= AUTH =================
+
+@app.route("/")
+def home():
+    d = load()
+    u = session.get("user")
+
+    if not u or u not in d["users"]:
+        return render_template_string(HTML, user=None)
+
+    return render_template_string(HTML, user=u)
+
+
+@app.route("/register", methods=["POST"])
+def register():
+    d = load()
+
+    u = request.form["username"]
+    p = hash_pw(request.form["password"])
+
+    if u in d["users"]:
+        return "exists"
+
+    d["users"][u] = {
+        "pass": p,
+        "keys": []
+    }
+
+    save(d)
+    return redirect("/")
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    d = load()
+
+    u = request.form["username"]
+    p = hash_pw(request.form["password"])
+
+    if u in d["users"] and d["users"][u]["pass"] == p:
+        session["user"] = u
+
+    return redirect("/")
+
+
+# ================= KEY SYSTEM =================
+
+@app.route("/api/create", methods=["POST"])
+def create():
+    d = load()
+    user = session.get("user")
+
+    days = int(request.json["days"])
+    count = int(request.json["count"])
+
+    keys = []
+    connects = []
+
+    for _ in range(count):
+        k = gen_key()
+
+        d["keys"][k] = {
+            "owner": user,
+            "days": days,
+            "created": str(datetime.now()),
+            "expire": str(datetime.now() + timedelta(days=days)),
+            "active": True
+        }
+
+        d["users"][user]["keys"].append(k)
+
+        keys.append(k)
+        connects.append(f"https://POWERKEY/connect/{k}")
+
+    save(d)
+
+    return jsonify({
+        "keys": keys,
+        "connect": connects
+    })
+
+
+# ================= CONNECT =================
+
+@app.route("/connect/<key>")
+def connect(key):
+    d = load()
+
+    if key not in d["keys"]:
+        return "INVALID KEY"
+
+    k = d["keys"][key]
+
+    exp = datetime.fromisoformat(k["expire"])
+
+    if datetime.now() > exp:
+        return "KEY EXPIRED"
+
+    return f"""
+    <h1>CONNECTED</h1>
+    <p>KEY: {key}</p>
+    <p>DAYS: {k['days']}</p>
+    <p>OWNER: {k['owner']}</p>
+    <p>STATUS: ACTIVE</p>
+    """
+
+
+# ================= RUN =================
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=3000)
